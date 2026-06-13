@@ -107,7 +107,9 @@ function parseMatch(event) {
     id: event.id,
     name: event.name,
     shortName: event.shortName,
-    status: competition.status?.type?.name,       // STATUS_SCHEDULED | STATUS_IN_PROGRESS | STATUS_FINAL
+    status: competition.status?.type?.name,        // e.g. STATUS_SCHEDULED, STATUS_FIRST_HALF, STATUS_FINAL
+    state: competition.status?.type?.state,        // 'pre' | 'in' | 'post' — use this for live/final checks
+    completed: competition.status?.type?.completed,
     statusDetail: competition.status?.type?.detail,
     startTime: event.date,
     clock: competition.status?.displayClock,
@@ -125,15 +127,15 @@ function parseMatch(event) {
 }
 
 function isLive(match) {
-  return match?.status === 'STATUS_IN_PROGRESS';
+  return match?.state === 'in';
 }
 
 function isFinal(match) {
-  return match?.status === 'STATUS_FINAL';
+  return match?.state === 'post' || match?.completed === true;
 }
 
 function isScheduled(match) {
-  return match?.status === 'STATUS_SCHEDULED';
+  return match?.state === 'pre';
 }
 
 module.exports = { getMatches, getMatch, getMatchKitColors, isLive, isFinal, isScheduled, todayDateStr };
