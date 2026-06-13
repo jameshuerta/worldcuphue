@@ -39,7 +39,7 @@ if (!HUE_LIGHT_LEFT || !HUE_LIGHT_RIGHT) {
 const CUTOFF_HOUR = parseInt(CUTOFF_HOUR_CT, 10);
 const FLASH_COUNT = parseInt(GOAL_FLASH_COUNT, 10);
 
-const POLL_LIVE_MS = 10_000;        // poll cadence while a match is live
+const POLL_LIVE_MS = 5_000;         // poll cadence while a match is live
 const POLL_WAIT_MS = 60_000;        // poll cadence while waiting for kickoff
 
 function timestamp() {
