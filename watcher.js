@@ -21,7 +21,7 @@
 
 require('dotenv').config();
 const { createHueController, hexToHueState } = require('./hue');
-const { getMatches, getMatch, isLive, isFinal, todayDateStr } = require('./worldcup');
+const { getMatches, getMatch, getMatchKitColors, isLive, isFinal, todayDateStr } = require('./worldcup');
 
 const {
   HUE_LIGHT_LEFT,
@@ -65,12 +65,12 @@ function lampColor(hex) {
   return hexToHueState(hex, 254);
 }
 
-async function setMatchColors(hue, match) {
-  await hue.setColorState([HUE_LIGHT_LEFT], lampColor(match.home.color), { transitiontime: 10 });
-  await hue.setColorState([HUE_LIGHT_RIGHT], lampColor(match.away.color), { transitiontime: 10 });
+async function setMatchColors(hue, match, homeColor, awayColor) {
+  await hue.setColorState([HUE_LIGHT_LEFT], lampColor(homeColor), { transitiontime: 10 });
+  await hue.setColorState([HUE_LIGHT_RIGHT], lampColor(awayColor), { transitiontime: 10 });
   console.log(
-    `[${timestamp()}] Lamps set — left: ${match.home.team} (${match.home.color})  ` +
-    `right: ${match.away.team} (${match.away.color})`
+    `[${timestamp()}] Lamps set — left: ${match.home.team} (${homeColor})  ` +
+    `right: ${match.away.team} (${awayColor})`
   );
 }
 
@@ -98,7 +98,15 @@ async function trackMatch(hue, matchId) {
   if (!match) return;
 
   console.log(`[${timestamp()}] Tracking: ${match.shortName} (${match.statusDetail})`);
-  await setMatchColors(hue, match);
+
+  // Prefer the actual kits each team is wearing (avoids color clashes / away
+  // kits) over the teams' general flag/brand colors. Fetched once at kickoff
+  // since kits don't change during a match.
+  const kits = await getMatchKitColors(matchId);
+  const homeColor = kits?.home ?? match.home.color;
+  const awayColor = kits?.away ?? match.away.color;
+
+  await setMatchColors(hue, match, homeColor, awayColor);
 
   let lastHomeScore = match.home.score;
   let lastAwayScore = match.away.score;
@@ -117,15 +125,15 @@ async function trackMatch(hue, matchId) {
     if (match.home.score > lastHomeScore) {
       lastHomeScore = match.home.score;
       console.log(`\n*** GOAL! ${match.home.team} scores! (${match.home.score}-${match.away.score}) ***\n`);
-      await hue.flashGoal([HUE_LIGHT_LEFT], lampColor(match.home.color), GOAL_FLASH_PATTERN, FLASH_COUNT);
-      await setMatchColors(hue, match);
+      await hue.flashGoal([HUE_LIGHT_LEFT], lampColor(homeColor), GOAL_FLASH_PATTERN, FLASH_COUNT);
+      await setMatchColors(hue, match, homeColor, awayColor);
     }
 
     if (match.away.score > lastAwayScore) {
       lastAwayScore = match.away.score;
       console.log(`\n*** GOAL! ${match.away.team} scores! (${match.home.score}-${match.away.score}) ***\n`);
-      await hue.flashGoal([HUE_LIGHT_RIGHT], lampColor(match.away.color), GOAL_FLASH_PATTERN, FLASH_COUNT);
-      await setMatchColors(hue, match);
+      await hue.flashGoal([HUE_LIGHT_RIGHT], lampColor(awayColor), GOAL_FLASH_PATTERN, FLASH_COUNT);
+      await setMatchColors(hue, match, homeColor, awayColor);
     }
 
     process.stdout.write(

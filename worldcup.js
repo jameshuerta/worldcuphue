@@ -10,7 +10,8 @@
  */
 const axios = require('axios');
 
-const ESPN_BASE = 'https://site.api.espn.com/apis/site/v2/sports/soccer/fifa.world/scoreboard';
+const ESPN_BASE    = 'https://site.api.espn.com/apis/site/v2/sports/soccer/fifa.world/scoreboard';
+const ESPN_SUMMARY = 'https://site.api.espn.com/apis/site/v2/sports/soccer/fifa.world/summary';
 
 /** Returns a YYYYMMDD string for today in local time. */
 function todayDateStr() {
@@ -61,6 +62,41 @@ function pickTeamColor(team) {
   return '#888888';
 }
 
+/**
+ * Returns the actual kit colors each team is wearing in a given match
+ * (e.g. a team's away/alternate kit, picked to avoid clashing with the
+ * opponent's home kit), as { home: '#rrggbb', away: '#rrggbb' }.
+ *
+ * Only available once the match's lineups/kits are confirmed (around
+ * kickoff) — returns null before that. Falls back to the team's general
+ * color if the uniform color itself is unusable (too close to white/black).
+ */
+async function getMatchKitColors(matchId) {
+  try {
+    const res = await axios.get(`${ESPN_SUMMARY}?event=${matchId}`, { timeout: 10000 });
+    const teams = res.data?.boxscore?.teams || [];
+    if (teams.length === 0) return null;
+
+    const colors = {};
+    for (const t of teams) {
+      const homeAway = t.homeAway;
+      const uniform = t.team?.uniform;
+      const fallback = pickTeamColor(t.team);
+
+      if (uniform && isUsableColor(uniform.color)) {
+        colors[homeAway] = `#${uniform.color}`;
+      } else if (uniform && isUsableColor(uniform.alternateColor)) {
+        colors[homeAway] = `#${uniform.alternateColor}`;
+      } else {
+        colors[homeAway] = fallback;
+      }
+    }
+    return colors.home && colors.away ? colors : null;
+  } catch {
+    return null;
+  }
+}
+
 function parseMatch(event) {
   const competition = event.competitions[0];
   const competitors = competition.competitors;
@@ -100,4 +136,4 @@ function isScheduled(match) {
   return match?.status === 'STATUS_SCHEDULED';
 }
 
-module.exports = { getMatches, getMatch, isLive, isFinal, isScheduled, todayDateStr };
+module.exports = { getMatches, getMatch, getMatchKitColors, isLive, isFinal, isScheduled, todayDateStr };
