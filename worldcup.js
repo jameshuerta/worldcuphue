@@ -1,0 +1,103 @@
+/**
+ * Fetches World Cup 2026 schedule and live scores from the ESPN public API.
+ *
+ * ESPN scoreboard endpoint (no API key required):
+ *   https://site.api.espn.com/apis/site/v2/sports/soccer/fifa.world/scoreboard
+ *
+ * Each competitor in the response already includes the team's primary
+ * "color" and "alternateColor" (hex, no #), which we use directly for
+ * the lamp colors.
+ */
+const axios = require('axios');
+
+const ESPN_BASE = 'https://site.api.espn.com/apis/site/v2/sports/soccer/fifa.world/scoreboard';
+
+/** Returns a YYYYMMDD string for today in local time. */
+function todayDateStr() {
+  return new Date().toLocaleDateString('en-CA').replace(/-/g, '');
+}
+
+/**
+ * Returns all of today's matches, sorted by kickoff time.
+ * @param {string} [dateStr] - YYYYMMDD, defaults to today
+ */
+async function getMatches(dateStr = todayDateStr()) {
+  const res = await axios.get(`${ESPN_BASE}?dates=${dateStr}`, { timeout: 10000 });
+  const events = res.data.events || [];
+  return events.map(parseMatch).sort((a, b) => new Date(a.startTime) - new Date(b.startTime));
+}
+
+/** Re-fetches a single match by ID (for polling during a live game). */
+async function getMatch(matchId, dateStr = todayDateStr()) {
+  const matches = await getMatches(dateStr);
+  return matches.find((m) => m.id === matchId) || null;
+}
+
+/**
+ * Decide whether a hex color is usable as a lamp color, or whether it's
+ * too close to white/black and we should fall back to the alternate color.
+ */
+function isUsableColor(hex) {
+  if (!hex) return false;
+  const r = parseInt(hex.slice(0, 2), 16) / 255;
+  const g = parseInt(hex.slice(2, 4), 16) / 255;
+  const b = parseInt(hex.slice(4, 6), 16) / 255;
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const lightness = (max + min) / 2;
+  const sat = max === min ? 0 : (max - min) / (1 - Math.abs(2 * lightness - 1));
+  if (lightness > 0.85 && sat < 0.2) return false; // near-white
+  if (lightness < 0.12) return false;              // near-black
+  return true;
+}
+
+/** Picks the best lamp color (hex with #) for a team, preferring primary over alternate. */
+function pickTeamColor(team) {
+  const color = team?.color;
+  const alt = team?.alternateColor;
+  if (isUsableColor(color)) return `#${color}`;
+  if (isUsableColor(alt)) return `#${alt}`;
+  if (color) return `#${color}`;
+  return '#888888';
+}
+
+function parseMatch(event) {
+  const competition = event.competitions[0];
+  const competitors = competition.competitors;
+  const home = competitors.find((c) => c.homeAway === 'home');
+  const away = competitors.find((c) => c.homeAway === 'away');
+
+  return {
+    id: event.id,
+    name: event.name,
+    shortName: event.shortName,
+    status: competition.status?.type?.name,       // STATUS_SCHEDULED | STATUS_IN_PROGRESS | STATUS_FINAL
+    statusDetail: competition.status?.type?.detail,
+    startTime: event.date,
+    clock: competition.status?.displayClock,
+    home: {
+      team: home?.team?.displayName,
+      score: parseInt(home?.score ?? '0', 10),
+      color: pickTeamColor(home?.team),
+    },
+    away: {
+      team: away?.team?.displayName,
+      score: parseInt(away?.score ?? '0', 10),
+      color: pickTeamColor(away?.team),
+    },
+  };
+}
+
+function isLive(match) {
+  return match?.status === 'STATUS_IN_PROGRESS';
+}
+
+function isFinal(match) {
+  return match?.status === 'STATUS_FINAL';
+}
+
+function isScheduled(match) {
+  return match?.status === 'STATUS_SCHEDULED';
+}
+
+module.exports = { getMatches, getMatch, isLive, isFinal, isScheduled, todayDateStr };
