@@ -29,7 +29,7 @@ const {
   CUTOFF_HOUR_CT     = '22',
   EARLY_LAMP_MINS    = '60',
   GOAL_FLASH_PATTERN = 'strobe',
-  GOAL_FLASH_COUNT   = '6',
+  GOAL_FLASH_COUNT   = '12',
 } = process.env;
 
 if (!HUE_LIGHT_LEFT || !HUE_LIGHT_RIGHT) {
@@ -66,6 +66,10 @@ function hourInCT() {
 function lampColor(hex) {
   return hexToHueState(hex, 254);
 }
+
+// Bright white — used for goal flashes so they stand out against the
+// steady team colors instead of blending in.
+const GOAL_FLASH_COLOR = { hue: 0, sat: 0, bri: 254 };
 
 async function setMatchColors(hue, match, homeColor, awayColor) {
   await hue.setColorState([HUE_LIGHT_LEFT], lampColor(homeColor), { transitiontime: 10 });
@@ -141,14 +145,14 @@ async function trackMatch(hue, matchId) {
     if (match.home.score > lastHomeScore) {
       lastHomeScore = match.home.score;
       console.log(`\n*** GOAL! ${match.home.team} scores! (${match.home.score}-${match.away.score}) ***\n`);
-      await hue.flashGoal([HUE_LIGHT_LEFT], lampColor(homeColor), GOAL_FLASH_PATTERN, FLASH_COUNT);
+      await hue.flashGoal([HUE_LIGHT_LEFT], GOAL_FLASH_COLOR, GOAL_FLASH_PATTERN, FLASH_COUNT);
       await setMatchColors(hue, match, homeColor, awayColor);
     }
 
     if (match.away.score > lastAwayScore) {
       lastAwayScore = match.away.score;
       console.log(`\n*** GOAL! ${match.away.team} scores! (${match.home.score}-${match.away.score}) ***\n`);
-      await hue.flashGoal([HUE_LIGHT_RIGHT], lampColor(awayColor), GOAL_FLASH_PATTERN, FLASH_COUNT);
+      await hue.flashGoal([HUE_LIGHT_RIGHT], GOAL_FLASH_COLOR, GOAL_FLASH_PATTERN, FLASH_COUNT);
       await setMatchColors(hue, match, homeColor, awayColor);
     }
 
