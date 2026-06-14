@@ -27,6 +27,7 @@ const {
   HUE_LIGHT_LEFT,
   HUE_LIGHT_RIGHT,
   CUTOFF_HOUR_CT     = '22',
+  EARLY_LAMP_MINS    = '60',
   GOAL_FLASH_PATTERN = 'strobe',
   GOAL_FLASH_COUNT   = '6',
 } = process.env;
@@ -37,6 +38,7 @@ if (!HUE_LIGHT_LEFT || !HUE_LIGHT_RIGHT) {
 }
 
 const CUTOFF_HOUR = parseInt(CUTOFF_HOUR_CT, 10);
+const EARLY_LAMP_MINS_NUM = parseInt(EARLY_LAMP_MINS, 10);
 const FLASH_COUNT = parseInt(GOAL_FLASH_COUNT, 10);
 
 const POLL_LIVE_MS = 5_000;         // poll cadence while a match is live
@@ -77,8 +79,16 @@ async function setMatchColors(hue, match, homeColor, awayColor) {
 /**
  * Waits for a match to kick off (or for the next poll to show it's live/final).
  * Returns false if the cutoff is reached before kickoff.
+ *
+ * For the first match of the day, sets the lamps to that match's colors
+ * EARLY_LAMP_MINS_NUM before kickoff, as a heads-up that the day's coverage
+ * is starting (using the teams' general colors, since kit info usually
+ * isn't published that far out — trackMatch() will refine to the actual
+ * kits once the match goes live).
  */
-async function waitForKickoff(match) {
+async function waitForKickoff(hue, match, isFirstMatch) {
+  let earlyColorsSet = false;
+
   while (true) {
     if (hourInCT() >= CUTOFF_HOUR) return false;
 
@@ -86,8 +96,14 @@ async function waitForKickoff(match) {
     if (!fresh || isLive(fresh) || isFinal(fresh)) return true;
 
     const minsUntil = Math.round((new Date(fresh.startTime) - Date.now()) / 60000);
-    console.log(`[${timestamp()}] ${fresh.shortName} kicks off in ~${minsUntil} min. Waiting...`);
 
+    if (isFirstMatch && !earlyColorsSet && minsUntil <= EARLY_LAMP_MINS_NUM) {
+      console.log(`[${timestamp()}] First match of the day — setting lamps ${EARLY_LAMP_MINS_NUM} min early.`);
+      await setMatchColors(hue, fresh, fresh.home.color, fresh.away.color);
+      earlyColorsSet = true;
+    }
+
+    console.log(`[${timestamp()}] ${fresh.shortName} kicks off in ~${minsUntil} min. Waiting...`);
     await delay(POLL_WAIT_MS);
   }
 }
@@ -165,18 +181,21 @@ async function main() {
   }
   console.log('');
 
+  let isFirstMatch = true;
+
   for (const match of matches) {
     const fresh = await getMatch(match.id, dateStr);
     if (isFinal(fresh)) continue;
 
     if (!isLive(fresh)) {
-      const started = await waitForKickoff(fresh);
+      const started = await waitForKickoff(hue, fresh, isFirstMatch);
       if (!started) {
         console.log(`[${timestamp()}] Reached ${CUTOFF_HOUR}:00 CT cutoff — not starting any more matches today.`);
         break;
       }
     }
 
+    isFirstMatch = false;
     await trackMatch(hue, match.id);
   }
 
