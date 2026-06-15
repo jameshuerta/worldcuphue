@@ -71,13 +71,28 @@ function lampColor(hex) {
 // steady team colors instead of blending in.
 const GOAL_FLASH_COLOR = { hue: 0, sat: 0, bri: 254 };
 
+/**
+ * Runs a Hue command, logging and swallowing any error instead of throwing.
+ * A bridge outage shouldn't take down the whole day's tracking — the next
+ * poll or goal will simply try the lamp command again.
+ */
+async function safeHue(label, fn) {
+  try {
+    await fn();
+  } catch (err) {
+    console.error(`[${timestamp()}] Hue error (${label}): ${err.message}`);
+  }
+}
+
 async function setMatchColors(hue, match, homeColor, awayColor) {
-  await hue.setColorState([HUE_LIGHT_LEFT], lampColor(homeColor), { transitiontime: 10 });
-  await hue.setColorState([HUE_LIGHT_RIGHT], lampColor(awayColor), { transitiontime: 10 });
-  console.log(
-    `[${timestamp()}] Lamps set — left: ${match.home.team} (${homeColor})  ` +
-    `right: ${match.away.team} (${awayColor})`
-  );
+  await safeHue('set colors', async () => {
+    await hue.setColorState([HUE_LIGHT_LEFT], lampColor(homeColor), { transitiontime: 10 });
+    await hue.setColorState([HUE_LIGHT_RIGHT], lampColor(awayColor), { transitiontime: 10 });
+    console.log(
+      `[${timestamp()}] Lamps set — left: ${match.home.team} (${homeColor})  ` +
+      `right: ${match.away.team} (${awayColor})`
+    );
+  });
 }
 
 /**
@@ -96,7 +111,14 @@ async function waitForKickoff(hue, match, isFirstMatch) {
   while (true) {
     if (hourInCT() >= CUTOFF_HOUR) return false;
 
-    const fresh = await getMatch(match.id);
+    let fresh;
+    try {
+      fresh = await getMatch(match.id);
+    } catch (err) {
+      console.error(`[${timestamp()}] ESPN poll error: ${err.message}`);
+      await delay(POLL_WAIT_MS);
+      continue;
+    }
     if (!fresh || isLive(fresh) || isFinal(fresh)) return true;
 
     const minsUntil = Math.round((new Date(fresh.startTime) - Date.now()) / 60000);
@@ -145,14 +167,14 @@ async function trackMatch(hue, matchId) {
     if (match.home.score > lastHomeScore) {
       lastHomeScore = match.home.score;
       console.log(`\n*** GOAL! ${match.home.team} scores! (${match.home.score}-${match.away.score}) ***\n`);
-      await hue.flashGoal([HUE_LIGHT_LEFT], GOAL_FLASH_COLOR, GOAL_FLASH_PATTERN, FLASH_COUNT);
+      await safeHue('goal flash', () => hue.flashGoal([HUE_LIGHT_LEFT], GOAL_FLASH_COLOR, GOAL_FLASH_PATTERN, FLASH_COUNT));
       await setMatchColors(hue, match, homeColor, awayColor);
     }
 
     if (match.away.score > lastAwayScore) {
       lastAwayScore = match.away.score;
       console.log(`\n*** GOAL! ${match.away.team} scores! (${match.home.score}-${match.away.score}) ***\n`);
-      await hue.flashGoal([HUE_LIGHT_RIGHT], GOAL_FLASH_COLOR, GOAL_FLASH_PATTERN, FLASH_COUNT);
+      await safeHue('goal flash', () => hue.flashGoal([HUE_LIGHT_RIGHT], GOAL_FLASH_COLOR, GOAL_FLASH_PATTERN, FLASH_COUNT));
       await setMatchColors(hue, match, homeColor, awayColor);
     }
 
@@ -204,7 +226,7 @@ async function main() {
   }
 
   console.log(`\n[${timestamp()}] Done for today. Turning lamps off.`);
-  await hue.turnOff([HUE_LIGHT_LEFT, HUE_LIGHT_RIGHT]);
+  await safeHue('turn off', () => hue.turnOff([HUE_LIGHT_LEFT, HUE_LIGHT_RIGHT]));
 }
 
 main().catch((err) => {

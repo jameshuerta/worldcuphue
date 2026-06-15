@@ -113,8 +113,23 @@ class HueController {
   /** Override in subclasses to swap base URL and auth headers. */
   async _request(method, path, body) {
     const url = `${this.base}${path}`;
-    const res = await axios({ method, url, data: body, timeout: 10000 });
-    return res;
+
+    // Transient network errors (e.g. bridge briefly unreachable on the LAN)
+    // are retried a few times before giving up, so a momentary blip doesn't
+    // take down the whole watcher process.
+    const RETRYABLE = new Set(['EHOSTUNREACH', 'ECONNREFUSED', 'ETIMEDOUT', 'ENETUNREACH', 'ECONNRESET']);
+    const MAX_ATTEMPTS = 3;
+
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      try {
+        return await axios({ method, url, data: body, timeout: 10000 });
+      } catch (err) {
+        const retryable = RETRYABLE.has(err.code) || err.code === 'ECONNABORTED';
+        if (!retryable || attempt === MAX_ATTEMPTS) throw err;
+        console.error(`[hue] ${err.code} on ${method.toUpperCase()} ${path} — retrying (${attempt}/${MAX_ATTEMPTS})...`);
+        await delay(1000 * attempt);
+      }
+    }
   }
 
   async getLights() {
