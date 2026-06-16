@@ -35,41 +35,41 @@ async function getMatch(matchId, dateStr = todayDateStr()) {
 }
 
 /**
- * Decide whether a hex color is usable as a lamp color, or whether it's
- * too close to white/black and we should fall back to the alternate color.
+ * Returns true if a hex color is too close to black to show meaningfully
+ * on a lamp (average channel below ~12% brightness).
+ * White and near-white are intentionally allowed — white is a common kit
+ * color and renders fine as a desaturated/cool-white lamp state.
+ * Black lamps should be turned off rather than showing a muddy dark color.
  */
-function isUsableColor(hex) {
-  if (!hex) return false;
+function isNearBlack(hex) {
+  if (!hex) return true;
   const r = parseInt(hex.slice(0, 2), 16) / 255;
   const g = parseInt(hex.slice(2, 4), 16) / 255;
   const b = parseInt(hex.slice(4, 6), 16) / 255;
-  const max = Math.max(r, g, b);
-  const min = Math.min(r, g, b);
-  const lightness = (max + min) / 2;
-  const sat = max === min ? 0 : (max - min) / (1 - Math.abs(2 * lightness - 1));
-  if (lightness > 0.85 && sat < 0.2) return false; // near-white
-  if (lightness < 0.12) return false;              // near-black
-  return true;
+  return (r + g + b) / 3 < 0.12;
 }
 
-/** Picks the best lamp color (hex with #) for a team, preferring primary over alternate. */
+/**
+ * Picks the lamp color for a team from their ESPN brand color fields.
+ * Returns a '#rrggbb' string, or null if the color is near-black
+ * (which tells the watcher to turn that lamp off instead).
+ * White is allowed and will render as a bright white lamp.
+ */
 function pickTeamColor(team) {
   const color = team?.color;
   const alt = team?.alternateColor;
-  if (isUsableColor(color)) return `#${color}`;
-  if (isUsableColor(alt)) return `#${alt}`;
-  if (color) return `#${color}`;
-  return '#888888';
+  if (!color) return null;
+  if (!isNearBlack(color)) return `#${color}`;
+  if (alt && !isNearBlack(alt)) return `#${alt}`; // primary black → try alt for brand fallback
+  return null; // both near-black → lamp off
 }
 
 /**
  * Returns the actual kit colors each team is wearing in a given match
- * (e.g. a team's away/alternate kit, picked to avoid clashing with the
- * opponent's home kit), as { home: '#rrggbb', away: '#rrggbb' }.
+ * as { home: '#rrggbb' | null, away: '#rrggbb' | null }.
  *
- * Only available once the match's lineups/kits are confirmed (around
- * kickoff) — returns null before that. Falls back to the team's general
- * color if the uniform color itself is unusable (too close to white/black).
+ * null means the kit is black — the watcher will turn that lamp off.
+ * Only available once lineups/kits are confirmed (around kickoff).
  */
 async function getMatchKitColors(matchId) {
   try {
@@ -81,17 +81,16 @@ async function getMatchKitColors(matchId) {
     for (const t of teams) {
       const homeAway = t.homeAway;
       const uniform = t.team?.uniform;
-      const fallback = pickTeamColor(t.team);
 
-      if (uniform && isUsableColor(uniform.color)) {
-        colors[homeAway] = `#${uniform.color}`;
-      } else if (uniform && isUsableColor(uniform.alternateColor)) {
-        colors[homeAway] = `#${uniform.alternateColor}`;
+      if (uniform) {
+        // Use the actual kit color. null = black kit → lamp off.
+        colors[homeAway] = isNearBlack(uniform.color) ? null : `#${uniform.color}`;
       } else {
-        colors[homeAway] = fallback;
+        // Kits not published yet — fall back to ESPN brand color.
+        colors[homeAway] = pickTeamColor(t.team);
       }
     }
-    return colors.home && colors.away ? colors : null;
+    return (colors.home !== undefined && colors.away !== undefined) ? colors : null;
   } catch {
     return null;
   }

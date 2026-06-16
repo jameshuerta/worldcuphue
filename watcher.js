@@ -86,11 +86,19 @@ async function safeHue(label, fn) {
 
 async function setMatchColors(hue, match, homeColor, awayColor) {
   await safeHue('set colors', async () => {
-    await hue.setColorState([HUE_LIGHT_LEFT], lampColor(homeColor), { transitiontime: 10 });
-    await hue.setColorState([HUE_LIGHT_RIGHT], lampColor(awayColor), { transitiontime: 10 });
+    if (homeColor) {
+      await hue.setColorState([HUE_LIGHT_LEFT], lampColor(homeColor), { transitiontime: 10 });
+    } else {
+      await hue.turnOff([HUE_LIGHT_LEFT]);
+    }
+    if (awayColor) {
+      await hue.setColorState([HUE_LIGHT_RIGHT], lampColor(awayColor), { transitiontime: 10 });
+    } else {
+      await hue.turnOff([HUE_LIGHT_RIGHT]);
+    }
     console.log(
-      `[${timestamp()}] Lamps set — left: ${match.home.team} (${homeColor})  ` +
-      `right: ${match.away.team} (${awayColor})`
+      `[${timestamp()}] Lamps set — left: ${match.home.team} (${homeColor ?? 'off'})  ` +
+      `right: ${match.away.team} (${awayColor ?? 'off'})`
     );
   });
 }
