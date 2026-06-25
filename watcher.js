@@ -1,22 +1,13 @@
 /**
  * World Cup 2026 — Hue lamp watcher.
  *
- * Run once per day (via cron, started before the earliest possible kickoff).
- * It walks through the day's matches in kickoff order:
+ * Single game:      left lamp = home team color, right lamp = away team color.
+ * Simultaneous:     left lamp = game 1 (cycles between its two teams every
+ *                   60 sec), right lamp = game 2 (same). Goals flash that
+ *                   game's lamp white, then restore the current cycle color.
  *
- *   - Waits for each match to kick off, then sets the left lamp to the
- *     home team's color and the right lamp to the away team's color.
- *   - Polls the live match for goals. When a team scores, flashes that
- *     team's lamp (left for home, right for away) in their color, then
- *     restores the steady team colors.
- *   - When the match ends, moves on to the next match of the day.
- *   - Won't start tracking a new match after CUTOFF_HOUR_CT (default 10 PM
- *     Central) — a match already in progress is allowed to finish normally.
- *   - Turns the lamps off once the day's matches are done (or the cutoff
- *     is reached with nothing live).
- *
- * Usage:
- *   node watcher.js
+ * Run once per day via cron — starts at 7 AM, tracks all matches in order,
+ * stops starting new ones after CUTOFF_HOUR_CT (default 10 PM Central).
  */
 
 require('dotenv').config();
@@ -37,12 +28,15 @@ if (!HUE_LIGHT_LEFT || !HUE_LIGHT_RIGHT) {
   process.exit(1);
 }
 
-const CUTOFF_HOUR = parseInt(CUTOFF_HOUR_CT, 10);
+const CUTOFF_HOUR         = parseInt(CUTOFF_HOUR_CT, 10);
 const EARLY_LAMP_MINS_NUM = parseInt(EARLY_LAMP_MINS, 10);
-const FLASH_COUNT = parseInt(GOAL_FLASH_COUNT, 10);
+const FLASH_COUNT         = parseInt(GOAL_FLASH_COUNT, 10);
 
-const POLL_LIVE_MS = 5_000;         // poll cadence while a match is live
-const POLL_WAIT_MS = 60_000;        // poll cadence while waiting for kickoff
+const POLL_LIVE_MS            = 5_000;           // poll cadence while a match is live
+const POLL_WAIT_MS            = 60_000;          // poll cadence while waiting for kickoff
+const CYCLE_MS                = 60_000;          // simultaneous mode: color cycle interval
+const CYCLE_TRANSITION        = 20;              // tenths of a second (2s smooth fade)
+const SIMULTANEOUS_THRESHOLD_MS = 60 * 60_000;  // kickoffs within 60 min = simultaneous
 
 function timestamp() {
   return new Date().toLocaleTimeString();
@@ -52,7 +46,6 @@ function delay(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-/** Current hour (0-23) in Central Time, regardless of the machine's local timezone. */
 function hourInCT() {
   const hourStr = new Intl.DateTimeFormat('en-US', {
     timeZone: 'America/Chicago',
@@ -62,20 +55,12 @@ function hourInCT() {
   return parseInt(hourStr, 10) % 24;
 }
 
-/** Lamp color for a team's hex color, forced to full brightness. */
 function lampColor(hex) {
   return hexToHueState(hex, 254);
 }
 
-// Bright white — used for goal flashes so they stand out against the
-// steady team colors instead of blending in.
 const GOAL_FLASH_COLOR = { hue: 0, sat: 0, bri: 254 };
 
-/**
- * Runs a Hue command, logging and swallowing any error instead of throwing.
- * A bridge outage shouldn't take down the whole day's tracking — the next
- * poll or goal will simply try the lamp command again.
- */
 async function safeHue(label, fn) {
   try {
     await fn();
@@ -83,6 +68,8 @@ async function safeHue(label, fn) {
     console.error(`[${timestamp()}] Hue error (${label}): ${err.message}`);
   }
 }
+
+// ── Single-game lamp control ──────────────────────────────────────────────────
 
 async function setMatchColors(hue, match, homeColor, awayColor) {
   await safeHue('set colors', async () => {
@@ -103,17 +90,9 @@ async function setMatchColors(hue, match, homeColor, awayColor) {
   });
 }
 
-/**
- * Waits for a match to kick off (or for the next poll to show it's live/final).
- * Returns false if the cutoff is reached before kickoff.
- *
- * For the first match of the day, sets the lamps to that match's colors
- * EARLY_LAMP_MINS_NUM before kickoff, as a heads-up that the day's coverage
- * is starting (using the teams' general colors, since kit info usually
- * isn't published that far out — trackMatch() will refine to the actual
- * kits once the match goes live).
- */
-async function waitForKickoff(hue, match, isFirstMatch) {
+// ── Pre-kickoff waiting ───────────────────────────────────────────────────────
+
+async function waitForKickoff(hue, match, isFirstMatch, partnerMatch = null) {
   let earlyColorsSet = false;
 
   while (true) {
@@ -133,7 +112,27 @@ async function waitForKickoff(hue, match, isFirstMatch) {
 
     if (isFirstMatch && !earlyColorsSet && minsUntil <= EARLY_LAMP_MINS_NUM) {
       console.log(`[${timestamp()}] First match of the day — setting lamps ${EARLY_LAMP_MINS_NUM} min early.`);
-      await setMatchColors(hue, fresh, fresh.home.color, fresh.away.color);
+      if (partnerMatch) {
+        // Two simultaneous games: one color from each game on each lamp
+        await safeHue('early lamps', async () => {
+          if (fresh.home.color) {
+            await hue.setColorState([HUE_LIGHT_LEFT], lampColor(fresh.home.color), { transitiontime: 10 });
+          } else {
+            await hue.turnOff([HUE_LIGHT_LEFT]);
+          }
+          if (partnerMatch.home.color) {
+            await hue.setColorState([HUE_LIGHT_RIGHT], lampColor(partnerMatch.home.color), { transitiontime: 10 });
+          } else {
+            await hue.turnOff([HUE_LIGHT_RIGHT]);
+          }
+          console.log(
+            `[${timestamp()}] Early lamps — left: ${fresh.home.team} (${fresh.home.color ?? 'off'})  ` +
+            `right: ${partnerMatch.home.team} (${partnerMatch.home.color ?? 'off'})`
+          );
+        });
+      } else {
+        await setMatchColors(hue, fresh, fresh.home.color, fresh.away.color);
+      }
       earlyColorsSet = true;
     }
 
@@ -142,16 +141,14 @@ async function waitForKickoff(hue, match, isFirstMatch) {
   }
 }
 
-/** Tracks a live match: sets initial colors, polls for goals, exits when final. */
-async function trackMatch(hue, matchId) {
-  let match = await getMatch(matchId);
+// ── Single-game tracking (both lamps, static colors) ─────────────────────────
+
+async function trackMatch(hue, matchId, dateStr) {
+  let match = await getMatch(matchId, dateStr);
   if (!match) return;
 
   console.log(`[${timestamp()}] Tracking: ${match.shortName} (${match.statusDetail})`);
 
-  // Prefer the actual kits each team is wearing (avoids color clashes / away
-  // kits) over the teams' general flag/brand colors. Fetched once at kickoff
-  // since kits don't change during a match.
   const kits = await getMatchKitColors(matchId);
   const homeColor = kits?.home ?? match.home.color;
   const awayColor = kits?.away ?? match.away.color;
@@ -165,7 +162,7 @@ async function trackMatch(hue, matchId) {
     await delay(POLL_LIVE_MS);
 
     try {
-      match = await getMatch(matchId);
+      match = await getMatch(matchId, dateStr);
     } catch (err) {
       console.error(`[${timestamp()}] Poll error: ${err.message}`);
       continue;
@@ -197,8 +194,99 @@ async function trackMatch(hue, matchId) {
   }
 }
 
+// ── Simultaneous mode: one lamp per game, cycling between team colors ─────────
+
+async function trackOneLamp(hue, matchId, lampId, homeColor, awayColor, dateStr) {
+  let showingHome  = true;
+  let currentColor = homeColor;
+  let lastCycleTime  = Date.now();
+  let lastHomeScore  = 0;
+  let lastAwayScore  = 0;
+
+  const setLamp = (color, transition = 10) =>
+    safeHue(`set lamp ${lampId}`, async () => {
+      if (color) {
+        await hue.setColorState([lampId], lampColor(color), { transitiontime: transition });
+      } else {
+        await hue.turnOff([lampId]);
+      }
+    });
+
+  await setLamp(currentColor);
+
+  const initial = await getMatch(matchId, dateStr);
+  if (initial) {
+    lastHomeScore = initial.home.score;
+    lastAwayScore = initial.away.score;
+    console.log(`[${timestamp()}] [${lampId}] ${initial.shortName}: ${initial.home.team} / ${initial.away.team}`);
+  }
+
+  while (true) {
+    await delay(POLL_LIVE_MS);
+
+    // Cycle color every CYCLE_MS with a smooth fade
+    if (Date.now() - lastCycleTime >= CYCLE_MS) {
+      showingHome  = !showingHome;
+      currentColor = showingHome ? homeColor : awayColor;
+      lastCycleTime  = Date.now();
+      await setLamp(currentColor, CYCLE_TRANSITION);
+    }
+
+    let match;
+    try {
+      match = await getMatch(matchId, dateStr);
+    } catch (err) {
+      console.error(`[${timestamp()}] Poll error (lamp ${lampId}): ${err.message}`);
+      continue;
+    }
+    if (!match) break;
+
+    if (match.home.score > lastHomeScore) {
+      lastHomeScore = match.home.score;
+      console.log(`\n*** GOAL! ${match.home.team} [lamp ${lampId}] (${match.home.score}-${match.away.score}) ***\n`);
+      await safeHue('goal flash', () => hue.flashGoal([lampId], GOAL_FLASH_COLOR, GOAL_FLASH_PATTERN, FLASH_COUNT));
+      await setLamp(currentColor);
+    }
+
+    if (match.away.score > lastAwayScore) {
+      lastAwayScore = match.away.score;
+      console.log(`\n*** GOAL! ${match.away.team} [lamp ${lampId}] (${match.home.score}-${match.away.score}) ***\n`);
+      await safeHue('goal flash', () => hue.flashGoal([lampId], GOAL_FLASH_COLOR, GOAL_FLASH_PATTERN, FLASH_COUNT));
+      await setLamp(currentColor);
+    }
+
+    if (isFinal(match)) {
+      console.log(`\n[${timestamp()}] FINAL (lamp ${lampId}): ${match.home.team} ${match.home.score}-${match.away.score} ${match.away.team}`);
+      break;
+    }
+  }
+}
+
+async function trackSimultaneous(hue, match1, match2, dateStr) {
+  console.log(`\n[${timestamp()}] SIMULTANEOUS — left: ${match1.shortName}  right: ${match2.shortName}\n`);
+
+  const [kits1, kits2] = await Promise.all([
+    getMatchKitColors(match1.id),
+    getMatchKitColors(match2.id),
+  ]);
+
+  const m1Home = kits1?.home ?? match1.home.color;
+  const m1Away = kits1?.away ?? match1.away.color;
+  const m2Home = kits2?.home ?? match2.home.color;
+  const m2Away = kits2?.away ?? match2.away.color;
+
+  await Promise.all([
+    trackOneLamp(hue, match1.id, HUE_LIGHT_LEFT,  m1Home, m1Away, dateStr)
+      .then(() => safeHue('left off',  () => hue.turnOff([HUE_LIGHT_LEFT]))),
+    trackOneLamp(hue, match2.id, HUE_LIGHT_RIGHT, m2Home, m2Away, dateStr)
+      .then(() => safeHue('right off', () => hue.turnOff([HUE_LIGHT_RIGHT]))),
+  ]);
+}
+
+// ── Main loop ─────────────────────────────────────────────────────────────────
+
 async function main() {
-  const hue = createHueController(process.env);
+  const hue     = createHueController(process.env);
   const dateStr = todayDateStr();
 
   console.log(`\nWorld Cup Hue Watcher — ${new Date().toLocaleString()}`);
@@ -215,22 +303,64 @@ async function main() {
   }
   console.log('');
 
+  const processed  = new Set();
   let isFirstMatch = true;
 
   for (const match of matches) {
+    if (processed.has(match.id)) continue;
+
     const fresh = await getMatch(match.id, dateStr);
-    if (isFinal(fresh)) continue;
+    if (isFinal(fresh)) { processed.add(match.id); continue; }
 
-    if (!isLive(fresh)) {
-      const started = await waitForKickoff(hue, fresh, isFirstMatch);
-      if (!started) {
-        console.log(`[${timestamp()}] Reached ${CUTOFF_HOUR}:00 CT cutoff — not starting any more matches today.`);
-        break;
+    // Gather all non-final matches kicking off within the simultaneous threshold
+    const simultaneous = matches.filter(
+      (m) =>
+        m.id !== match.id &&
+        !processed.has(m.id) &&
+        !isFinal(m) &&
+        Math.abs(new Date(m.startTime) - new Date(match.startTime)) <= SIMULTANEOUS_THRESHOLD_MS
+    );
+
+    processed.add(match.id);
+
+    if (simultaneous.length > 0) {
+      const partner = simultaneous[0];
+      processed.add(partner.id);
+
+      // Mark any additional simultaneous matches as processed (can't show >2)
+      if (simultaneous.length > 1) {
+        simultaneous.slice(1).forEach((m) => processed.add(m.id));
+        console.log(
+          `[${timestamp()}] Note: ${simultaneous.length - 1} additional simultaneous match(es) can't be shown — only 2 lamps available.`
+        );
       }
-    }
 
-    isFirstMatch = false;
-    await trackMatch(hue, match.id);
+      const partnerFresh = await getMatch(partner.id, dateStr);
+
+      if (!isLive(fresh) && !isLive(partnerFresh)) {
+        const started = await waitForKickoff(hue, fresh, isFirstMatch, partnerFresh);
+        if (!started) {
+          console.log(`[${timestamp()}] Reached ${CUTOFF_HOUR}:00 CT cutoff.`);
+          break;
+        }
+      }
+      isFirstMatch = false;
+
+      const m1 = (await getMatch(match.id,   dateStr)) ?? fresh;
+      const m2 = (await getMatch(partner.id, dateStr)) ?? partnerFresh;
+      await trackSimultaneous(hue, m1, m2, dateStr);
+
+    } else {
+      if (!isLive(fresh)) {
+        const started = await waitForKickoff(hue, fresh, isFirstMatch);
+        if (!started) {
+          console.log(`[${timestamp()}] Reached ${CUTOFF_HOUR}:00 CT cutoff.`);
+          break;
+        }
+      }
+      isFirstMatch = false;
+      await trackMatch(hue, match.id, dateStr);
+    }
   }
 
   console.log(`\n[${timestamp()}] Done for today. Turning lamps off.`);
