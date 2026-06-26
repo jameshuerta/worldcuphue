@@ -34,7 +34,7 @@ const FLASH_COUNT         = parseInt(GOAL_FLASH_COUNT, 10);
 
 const POLL_LIVE_MS            = 5_000;           // poll cadence while a match is live
 const POLL_WAIT_MS            = 60_000;          // poll cadence while waiting for kickoff
-const CYCLE_MS                = 60_000;          // simultaneous mode: color cycle interval
+const CYCLE_MS                = 600_000;         // simultaneous mode: color cycle interval
 const CYCLE_TRANSITION        = 20;              // tenths of a second (2s smooth fade)
 const SIMULTANEOUS_THRESHOLD_MS = 60 * 60_000;  // kickoffs within 60 min = simultaneous
 
